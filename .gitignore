@@ -18,3 +18,4 @@ __pycache__/
 # local-only notes and logs
 notes/
 *.log
+dev/

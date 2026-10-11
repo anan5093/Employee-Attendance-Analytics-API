@@ -9,7 +9,8 @@ works, but nobody has reviewed it. Read PROBLEM_STATEMENT.docx for what is expec
 openapi.yaml for the contract and DATA_MODEL.md for what is stored in MongoDB.
 """
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -23,10 +24,63 @@ client = MongoClient(os.getenv("MONGO_URI", "mongodb://localhost:27017"))
 db = client[os.getenv("MONGO_DB", "attendance_db")]
 
 IST = timezone(timedelta(hours=5, minutes=30))
+EPOCH = datetime(1970, 1, 1, tzinfo = timezone.utc)
 
 app = FastAPI(title="Employee Attendance & Analytics API", version="2.0.0")
 
+# --------------------------------------------------------------------------- #
+# Time and rules (my own version)
+# --------------------------------------------------------------------------- #
 
+def ms_to_dt(ms: int) -> datetime:
+     """Epoch miliseconds -> aware UTC datetime, cut to whole seconds."""
+     return datetime.fromtimestamp(ms // 1000, tz = timezone.utc)
+
+def dt_to_ms(dt: datetime) -> int:
+    """Aware datetime -> epoch miliseconds, whole seconds only."""
+    return (dt - EPOCH) // timedelta(seconds=1)* 1000
+
+def parse_hhmm(text: str) -> time:
+    """'09:30' -> a time of day (hour 9, minute 30)."""
+    return time.fromisoformat(text)
+
+def is_overnight(shift_start: str, shift_end: str) -> bool:
+    """R1: a shift is overnight when it ends at or before the time it starts."""
+    return parse_hhmm(shift_end) <= parse_hhmm(shift_start)
+
+def attendence_date(punch_in: datetime, shift_start: str, shift_end: str) -> str:
+    """R1: the IST calender date a punch-in belongs to."""
+    local = punch_in.astimezone(IST)
+    day = local.date()
+    if is_overnight(shift_start, shift_end) and local.time() < parse_hhmm(shift_end):
+        day = day - timedelta(days= 1)
+    return day.isoformat() 
+
+def shift_window(day: str, shift_start: str, shift_end: str):
+    """The shift's start and end moments (IST) for the record date 'day' ."""
+    d = date.fromisoformat(day)
+    start = datetime.combine(d, parse_hhmm(shift_start), tzinfo = IST)
+    end_day = d + timedelta(days=1) if is_overnight(shift_start, shift_end) else d
+    end = datetime.combine(end_day, parse_hhmm(shift_end), tzinfo= IST)
+    return start, end
+
+def late_minutes(punch_in: datetime, shift_start: str, shift_end: str) -> int:
+    """R2: more than 10:00 after shift start -> whole minutes since shift start, else 0. """
+    start, _ = shift_window(attendence_date(punch_in, shift_start, shift_end), shift_start, shift_end)
+    seconds = (punch_in - start) // timedelta(seconds=1)
+    return seconds // 60 if seconds > 600 else 0 
+
+def overtime_minutes(punch_out: datetime, record_date: str, shift_start: str, shift_end: str) -> int:
+    """R3: whole minutes after shift end, only if 30 or more, else 0."""
+    _, end = shift_window(record_date, shift_start, shift_end)
+    seconds = (punch_out - end) // timedelta(seconds=1)
+    minutes = seconds // 60
+    return minutes if minutes >= 30 else 0
+
+def work_hours(total_seconds: int) -> float:
+    """R4: seconds /3600, 2 decimals, half-up. """
+    hours = Decimal(total_seconds) / Decimal(3600)
+    return float(hours.quantize(Decimal("0.01"), rounding= ROUND_HALF_UP))
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
@@ -45,6 +99,10 @@ def compute_overtime(punch_out: datetime, shift_end: str, date_str: str) -> int:
     h, m = map(int, shift_end.split(":"))
     end = datetime.fromisoformat(date_str).replace(hour=h, minute=m, tzinfo=IST)
     return max(0, int((punch_out - end).total_seconds() / 60))
+
+def is_half_day(hours: float) -> bool:
+    """R5: half day when the ROUNDED work hours are below 4.50. """
+    return hours < 4.5
 
 
 # --------------------------------------------------------------------------- #
