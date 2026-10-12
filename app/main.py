@@ -9,6 +9,7 @@ works, but nobody has reviewed it. Read PROBLEM_STATEMENT.docx for what is expec
 openapi.yaml for the contract and DATA_MODEL.md for what is stored in MongoDB.
 """
 import os
+from contextlib import asynccontextmanager
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional
@@ -17,17 +18,32 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from pymongo import MongoClient
+from pymongo.errors import PyMongoError
 
 load_dotenv()
 
-client = MongoClient(os.getenv("MONGO_URI", "mongodb://localhost:27017"))
+client = MongoClient(os.getenv("MONGO_URI", "mongodb://localhost:27017"), tz_aware=True, serverSelectionTimeoutMS=5000,)
 db = client[os.getenv("MONGO_DB", "attendance_db")]
 
 IST = timezone(timedelta(hours=5, minutes=30))
 EPOCH = datetime(1970, 1, 1, tzinfo = timezone.utc)
 
-app = FastAPI(title="Employee Attendance & Analytics API", version="2.0.0")
+def ensure_indexes():
+    db.employees.create_index("emp_code", unique=True)
+    db.attendance_logs.create_index([("emp_code", 1), ("date", 1)], unique=True)
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    try:
+        ensure_indexes()
+    except PyMongoError as exc:
+        print(f"WARNING: could not create indexes: {exc}")
+
+    yield
+
+
+app = FastAPI(title="Employee Attendance & Analytics API", version="2.0.0", lifespan=lifespan)        
 # --------------------------------------------------------------------------- #
 # Time and rules (my own version)
 # --------------------------------------------------------------------------- #
@@ -48,7 +64,7 @@ def is_overnight(shift_start: str, shift_end: str) -> bool:
     """R1: a shift is overnight when it ends at or before the time it starts."""
     return parse_hhmm(shift_end) <= parse_hhmm(shift_start)
 
-def attendence_date(punch_in: datetime, shift_start: str, shift_end: str) -> str:
+def attendance_date(punch_in: datetime, shift_start: str, shift_end: str) -> str:
     """R1: the IST calender date a punch-in belongs to."""
     local = punch_in.astimezone(IST)
     day = local.date()
@@ -66,7 +82,7 @@ def shift_window(day: str, shift_start: str, shift_end: str):
 
 def late_minutes(punch_in: datetime, shift_start: str, shift_end: str) -> int:
     """R2: more than 10:00 after shift start -> whole minutes since shift start, else 0. """
-    start, _ = shift_window(attendence_date(punch_in, shift_start, shift_end), shift_start, shift_end)
+    start, _ = shift_window(attendance_date(punch_in, shift_start, shift_end), shift_start, shift_end)
     seconds = (punch_in - start) // timedelta(seconds=1)
     return seconds // 60 if seconds > 600 else 0 
 
@@ -81,9 +97,11 @@ def work_hours(total_seconds: int) -> float:
     """R4: seconds /3600, 2 decimals, half-up. """
     hours = Decimal(total_seconds) / Decimal(3600)
     return float(hours.quantize(Decimal("0.01"), rounding= ROUND_HALF_UP))
+
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
+
 def compute_late_minutes(punch_in: datetime, shift_start: str) -> int:
     h, m = map(int, shift_start.split(":"))
     start = punch_in.replace(hour=h, minute=m, second=0, microsecond=0)
@@ -129,8 +147,12 @@ class PunchInIn(BaseModel):
 # --------------------------------------------------------------------------- #
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    try:
+        client.admin.command("ping")
 
+    except PyMongoError:
+        raise HTTPException(status_code=503, detail="database unavailable")
+    return {"status": "ok"}    
 
 @app.post("/employees", status_code=201)
 def create_employee(body: EmployeeIn):
