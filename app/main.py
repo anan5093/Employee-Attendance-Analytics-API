@@ -122,6 +122,49 @@ def is_half_day(hours: float) -> bool:
     """R5: half day when the ROUNDED work hours are below 4.50. """
     return hours < 4.5
 
+def to_ms(value):
+    """A stored  datetime (or None) -> epoch milliseconds (or None)."""
+    return None if value is None else dt_to_ms(value)
+
+def attendance_to_api(doc: dict) -> dict:
+    """A stored attendance document -> the exact shape the contract returns."""
+    history = []
+    for entry in doc.get("history") or []:
+        changes = {}
+        for field, change in entry["changes"].items():
+            if field in ("punch_in", "punch_out"):
+                change = {"from": to_ms(change["from"]), "to": to_ms(change["to"])} 
+            changes[field] = change
+        history.append({
+            "at": dt_to_ms(entry["at"]),
+            "by": entry["by"], "reason": entry["reason"], "changes": changes,})
+
+    return{
+        "emp_code": doc["emp_code"],
+        "date": doc["date"],
+        "status": doc["status"],
+        "punch_in": to_ms(doc.get("punch_in")),
+        "punch_out": to_ms(doc.get("punch_out")),
+        "work_hours": doc.get("work_hours"),
+        "late_minutes": doc.get("late_minutes") or 0,
+        "overtime_minutes": doc.get("overtime_minutes") or 0,
+        "half_day": bool(doc.get("half_day", False)),
+        "history": history,
+    } 
+
+def employee_to_api(doc: dict) -> dict:
+    """A stored employee document -> the shape the contract returns."""
+    return {
+        "emp_code": doc["emp_code"],
+        "name": doc["name"],
+        "email": doc["email"],
+        "department": doc["department"],
+        "shift_start": doc["shift_start"],
+        "shift_end": doc["shift_end"],
+        "joined_on": doc["joined_on"],
+        "created_at": dt_to_ms(doc["cteated_at"]),
+    }              
+
 
 # --------------------------------------------------------------------------- #
 # Models
