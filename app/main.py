@@ -246,7 +246,8 @@ def check_trend_range(date_from: str, date_to: str):
 # Models
 # --------------------------------------------------------------------------- #
 EpochMs = Annotated[int, Field(strict=True, ge=100_000_000_000, le=4_102_444_800_000)]
-presenceStatus = Literal["PRESENT", "ABSENT","LEAVE", "WFH", "ON_DUTY"]
+Status = Literal["PRESENT", "ABSENT", "LEAVE", "WFH", "ON_DUTY"]
+PresenceStatus = Literal["PRESENT", "WFH", "ON_DUTY"]
 HHMM = Annotated[str, Field(pattern=r"^([01]\d|2[0-3]):[0-5]\d$")]
 
 def _real_date(value: str) -> str:
@@ -276,7 +277,7 @@ class EmployeeIn(BaseModel):
 class PunchInIn(BaseModel):
     emp_code: str
     punched_at: Optional[EpochMs] = None
-    status: presenceStatus = "PRESENT"
+    status: PresenceStatus = "PRESENT"
 
 class PunchOutIn(BaseModel):
     emp_code: str
@@ -302,13 +303,19 @@ def health():
         raise HTTPException(status_code=503, detail="database unavailable")
     return {"status": "ok"}    
 
+
 @app.post("/employees", status_code=201)
 def create_employee(body: EmployeeIn):
-    if db.employees.find_one({"emp_code": body.emp_code}):
-        raise HTTPException(409, "emp_code already exists")
     doc = body.model_dump()
-    doc["created_at"] = datetime.now()
-    db.employees.insert_one(doc)
+
+    # Store server-generated creation time as epoch milliseconds.
+    doc["created_at"] = dt_to_ms(datetime.now(timezone.utc))
+
+    try:
+        db.employees.insert_one(doc)
+    except DuplicateKeyError:
+        raise HTTPException(409, "emp_code already exists")
+
     doc.pop("_id", None)
     return doc
 
