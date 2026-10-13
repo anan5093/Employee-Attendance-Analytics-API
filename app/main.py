@@ -12,11 +12,11 @@ import os
 from contextlib import asynccontextmanager
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
-from typing import Optional
+from typing import Annotated, Literal, Optional
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from pydantic import AfterValidator, BaseModel, Field, model_validator
 from pymongo import MongoClient
 from pymongo.errors import PyMongoError
 
@@ -162,27 +162,49 @@ def employee_to_api(doc: dict) -> dict:
         "shift_start": doc["shift_start"],
         "shift_end": doc["shift_end"],
         "joined_on": doc["joined_on"],
-        "created_at": dt_to_ms(doc["cteated_at"]),
+        "created_at": dt_to_ms(doc["created_at"]),
     }              
 
 
 # --------------------------------------------------------------------------- #
 # Models
 # --------------------------------------------------------------------------- #
+EpochMs = Annotated[int, Field(strict=True, ge=100_000_000_000, le=4_102_444_800_000)]
+presenceStatus = Literal["PRESENT", "WFH", "ON_DUTY"]
+HHMM = Annotated[str, Field(pattern=r"^([01]\d2[0-3]):[0-5]\d$")]
+
+def _real_date(value: str) -> str:
+    date.fromisofromat(value)
+    return value
+
+DateStr = Annotated[str, Field(pattern=r"^\d{4}-\d{2}-\d{2}$"), AfterValidator(_real_date)]
+
+
+
 class EmployeeIn(BaseModel):
-    emp_code: str
-    name: str
-    email: str
-    department: str
-    shift_start: str = "09:30"
-    shift_end: str = "18:30"
-    joined_on: str
+    emp_code: str = Field(pattern=r"^EMP\d{4,6}$")
+    name: str = Field(min_length=1, max_length=100)
+    email: str = Field(max_length=120, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+    department: str = Field(min_length=1, max_length=50)
+    shift_start: HHMM = "09:30"
+    shift_end: HHMM = "18:30"
+    joined_on: DateStr
+
+    @model_validator(mode="after")
+    def shifts_must_differ(self):
+        if self.shift_start == self.shift_end:
+            raise ValueError("shift_start and shift_end must differ")
+        return self
 
 
 class PunchInIn(BaseModel):
     emp_code: str
-    punched_at: Optional[int] = None
-    status: str = "PRESENT"
+    punched_at: Optional[EpochMs] = None
+    status: presenceStatus = "PRESENT"
+
+class PunchOutIn(BaseModel):
+    emp_code: str
+    punched_at: Optional[EpochMs] = None
 
 
 # --------------------------------------------------------------------------- #
