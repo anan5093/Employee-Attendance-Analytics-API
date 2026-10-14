@@ -1,13 +1,5 @@
-"""
-Employee Attendance & Analytics API - STARTER
+# main.py
 
-Run:  uvicorn app.main:app --port 8000
-Env:  MONGO_URI, MONGO_DB (a local .env is loaded for convenience)
-
-This file was written quickly by a colleague who has left the company. The happy path
-works, but nobody has reviewed it. Read PROBLEM_STATEMENT.docx for what is expected of you,
-openapi.yaml for the contract and DATA_MODEL.md for what is stored in MongoDB.
-"""
 import calendar
 import json
 import os
@@ -119,24 +111,8 @@ def work_hours(total_seconds: int) -> float:
 
 
 # --------------------------------------------------------------------------- #
-# Helpers
+# Output and rounding helpers
 # --------------------------------------------------------------------------- #
-
-def compute_late_minutes(punch_in: datetime, shift_start: str) -> int:
-    h, m = map(int, shift_start.split(":"))
-    start = punch_in.replace(hour=h, minute=m, second=0, microsecond=0)
-    minutes = int((punch_in - start).total_seconds() / 60)
-    return minutes if minutes > 10 else 0
-
-
-def compute_work_hours(punch_in: datetime, punch_out: datetime) -> float:
-    return round((punch_out - punch_in).total_seconds() / 3600, 2)
-
-
-def compute_overtime(punch_out: datetime, shift_end: str, date_str: str) -> int:
-    h, m = map(int, shift_end.split(":"))
-    end = datetime.fromisoformat(date_str).replace(hour=h, minute=m, tzinfo=IST)
-    return max(0, int((punch_out - end).total_seconds() / 60))
 
 def is_half_day(hours: float) -> bool:
     """R5: half day when the ROUNDED work hours are below 4.50. """
@@ -307,17 +283,12 @@ def health():
 @app.post("/employees", status_code=201)
 def create_employee(body: EmployeeIn):
     doc = body.model_dump()
-
-    # Store server-generated creation time as epoch milliseconds.
-    doc["created_at"] = dt_to_ms(datetime.now(timezone.utc))
-
+    doc["created_at"] = instant_or_now(None)    # a real datetime: MongoDB stores a BSON date
     try:
         db.employees.insert_one(doc)
     except DuplicateKeyError:
         raise HTTPException(409, "emp_code already exists")
-
-    doc.pop("_id", None)
-    return doc
+    return employee_to_api(doc)                  # turns created_at into epoch ms for the response
 
 
 @app.get("/employees")
@@ -806,13 +777,4 @@ def explain_endpoint(
 
 
 
-# --------------------------------------------------------------------------- #
-# TODO - the rest of the contract (see openapi.yaml):
-#   POST  /attendance/punch-out
-#   PATCH /attendance/{emp_code}/{date}
-#   GET   /analytics/employees/{emp_code}/monthly
-#   GET   /analytics/departments/summary
-#   GET   /analytics/leaderboard/late
-#   GET   /analytics/departments/{department}/trend
-#   GET   /admin/explain/{endpoint}
-# --------------------------------------------------------------------------- #
+
