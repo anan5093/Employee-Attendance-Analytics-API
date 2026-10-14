@@ -19,4 +19,5 @@ __pycache__/
 notes/
 *.log
 dev/
-tmp/
+tmp/DATA_MODEL.md
+openapi.yaml
